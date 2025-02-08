@@ -1,0 +1,4 @@
+*.json
+session_name.session
+session_name.session-journal
+/tg_exp

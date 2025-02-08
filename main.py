@@ -3,13 +3,13 @@ import json
 import asyncio
 import threading
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, simpledialog
 from telethon import TelegramClient
 
 CHUNK_SIZE = 5000
 
 def chunk_messages(messages, chunk_size):
-    """Разбивает список сообщений на чанки, вставляя разделитель между ними."""
+    """Разбивает список сообщений на чанки с разделителями."""
     if not messages:
         return []
     chunked = []
@@ -28,9 +28,10 @@ class TelegramExporter:
         self.session_name = session_name
         self.client = None
 
-    async def connect(self):
+    async def connect(self, phone_callback, code_callback):
         self.client = TelegramClient(self.session_name, self.api_id, self.api_hash)
-        await self.client.start()
+        # Запускаем подключение, используя переданные callback'и для запроса телефона и кода
+        await self.client.start(phone=phone_callback, code_callback=code_callback)
         return await self.client.get_dialogs()
 
     async def export_chat(self, chat_id, base_file_path):
@@ -82,8 +83,7 @@ class TelegramExporterUI:
         self.root = root
         self.root.title("Telegram Exporter")
         self.root.geometry("1920x1080")
-        # Фуллскрин отключаем
-        # self.root.attributes('-fullscreen', True)
+        # Здесь окно не открывается в полном экране – полноэкранный режим отключён
         
         self.api_id = None
         self.api_hash = None
@@ -92,7 +92,7 @@ class TelegramExporterUI:
         self.exporter_loop = None # Отдельный event loop для TelegramExporter
         self.dialogs = []         # Список диалогов
         self.blocks = []          # Список блоков экспорта
-        # Ключ: (block_name, chat_name, chat_id), значение: {"last_id": last_message_id, "file_path": file_path}
+        # Обновляемые чаты: ключ – (block_name, chat_name, chat_id), значение – {"last_id": ..., "file_path": ...}
         self.updates = {}
         
         self.cred_frame = tk.Frame(root)
@@ -107,6 +107,7 @@ class TelegramExporterUI:
         else:
             self.show_cred_frame()
     
+    # Методы для экрана ввода конфигурации
     def setup_cred_frame(self):
         tk.Label(self.cred_frame, text="Введите api_id (число):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.entry_api_id = tk.Entry(self.cred_frame)
@@ -118,6 +119,7 @@ class TelegramExporterUI:
         
         tk.Button(self.cred_frame, text="Сохранить", command=self.save_credentials).grid(row=2, column=0, columnspan=2, padx=5, pady=5)
     
+    # Методы для основного экрана
     def setup_main_frame(self):
         self.main_frame.columnconfigure(0, weight=1, minsize=600)
         self.main_frame.columnconfigure(1, weight=1, minsize=600)
@@ -235,7 +237,8 @@ class TelegramExporterUI:
         threading.Thread(target=run_loop, args=(self.exporter_loop,), daemon=True).start()
         
         self.exporter = TelegramExporter(self.api_id, self.api_hash)
-        future = asyncio.run_coroutine_threadsafe(self.exporter.connect(), self.exporter_loop)
+        # Используем методы get_phone и get_code для UI-запросов
+        future = asyncio.run_coroutine_threadsafe(self.exporter.connect(self.get_phone, self.get_code), self.exporter_loop)
         try:
             self.dialogs = future.result()
             self.root.after(0, self.update_dialog_list)
@@ -244,6 +247,26 @@ class TelegramExporterUI:
             self.root.after(0, lambda: messagebox.showerror("Ошибка", f"Ошибка подключения: {e}"))
             self.root.after(0, lambda: self.status_label.config(text="Статус: ошибка подключения"))
             self.root.after(0, lambda: self.connect_button.config(state=tk.NORMAL))
+    
+    def get_phone(self):
+        result = [None]
+        event = threading.Event()
+        def ask():
+            result[0] = simpledialog.askstring("Телефон", "Введите номер телефона (или токен бота):", parent=self.root)
+            event.set()
+        self.root.after(0, ask)
+        event.wait()
+        return result[0]
+    
+    def get_code(self):
+        result = [None]
+        event = threading.Event()
+        def ask():
+            result[0] = simpledialog.askstring("Код", "Введите код верификации:", parent=self.root)
+            event.set()
+        self.root.after(0, ask)
+        event.wait()
+        return result[0]
     
     def update_dialog_list(self):
         for widget in self.dialogs_container.winfo_children():
@@ -264,7 +287,7 @@ class TelegramExporterUI:
         self.root.clipboard_append(chat_info)
         messagebox.showinfo("Копировать чат", f"Скопировано: {chat_info}")
     
-    # Методы для блоков экспорта
+    # Методы для работы с блоками экспорта
     def on_add_block(self):
         self.add_block()
     
@@ -340,7 +363,7 @@ class TelegramExporterUI:
             messagebox.showwarning("Внимание", "Клиент не подключён. Сначала подключитесь к Telegram.")
             return
         
-        # Если файл существует – регистрируем чат для обновлений (без повторного экспорта)
+        # Если файл уже существует – регистрируем чат для обновлений
         if os.path.exists(base_file_path):
             try:
                 with open(base_file_path, "r", encoding="utf-8") as f:
@@ -449,10 +472,6 @@ class ChatBlock:
         self.save_callback()
         messagebox.showinfo("Сохранено", f"Блок '{self.name_entry.get()}' сохранён с {len(self.chat_entries)} полями.")
     
-    def export_chat(self, entry, entry_obj):
-        chat_value = entry.get().strip()
-        self.export_callback(chat_value, self.name_entry.get().strip(), entry_obj)
-    
     def delete_block(self):
         if self.delete_callback:
             self.delete_callback(self)
@@ -467,6 +486,10 @@ class ChatBlock:
                 new_entries.append(entry_obj)
         self.chat_entries = new_entries
         self.save_callback()
+    
+    def export_chat(self, entry, entry_obj):
+        chat_value = entry.get().strip()
+        self.export_callback(chat_value, self.name_entry.get().strip(), entry_obj)
 
 if __name__ == "__main__":
     root = tk.Tk()
