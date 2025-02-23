@@ -1,79 +1,11 @@
 import os
 import json
-import asyncio
 import threading
+import asyncio
 import tkinter as tk
 from tkinter import messagebox, filedialog, simpledialog
-from telethon import TelegramClient
 
-CHUNK_SIZE = 5000
-
-def chunk_messages(messages, chunk_size):
-    """Разбивает список сообщений на чанки с разделителями."""
-    if not messages:
-        return []
-    chunked = []
-    for i in range(0, len(messages), chunk_size):
-        chunked.extend(messages[i:i+chunk_size])
-        if i + chunk_size < len(messages):
-            chunked.append("---- CHUNK BREAK ----\n")
-    return chunked
-
-# ------------------------- Логическая часть (Business Logic) -------------------------
-
-class TelegramExporter:
-    def __init__(self, api_id, api_hash, session_name="session_name"):
-        self.api_id = api_id
-        self.api_hash = api_hash
-        self.session_name = session_name
-        self.client = None
-
-    async def connect(self, phone_callback, code_callback):
-        self.client = TelegramClient(self.session_name, self.api_id, self.api_hash)
-        # Запускаем подключение, используя переданные callback'и для запроса телефона и кода
-        await self.client.start(phone=phone_callback, code_callback=code_callback)
-        return await self.client.get_dialogs()
-
-    async def export_chat(self, chat_id, base_file_path):
-        messages = []
-        max_id = 0
-        async for message in self.client.iter_messages(chat_id):
-            if message.id > max_id:
-                max_id = message.id
-            date_str = message.date.strftime('%Y-%m-%d %H:%M:%S') if message.date else "UnknownDate"
-            sender = message.sender_id if message.sender_id else "UnknownSender"
-            text = message.message if message.message else ""
-            messages.append(f"MSGID: {message.id} | [{date_str}] (ID {sender}): {text}\n")
-        chunked = chunk_messages(messages, CHUNK_SIZE)
-        with open(base_file_path, "w", encoding="utf-8") as f:
-            for line in chunked:
-                f.write(line)
-        return max_id
-
-    async def update_chat(self, chat_id, base_file_path, last_message_id):
-        new_messages = []
-        new_last_id = last_message_id
-        async for message in self.client.iter_messages(chat_id, min_id=last_message_id):
-            if message.id > new_last_id:
-                new_last_id = message.id
-            date_str = message.date.strftime('%Y-%m-%d %H:%M:%S') if message.date else "UnknownDate"
-            sender = message.sender_id if message.sender_id else "UnknownSender"
-            text = message.message if message.message else ""
-            new_messages.append(f"MSGID: {message.id} | [{date_str}] (ID {sender}): {text}\n")
-        if new_messages:
-            if os.path.exists(base_file_path):
-                with open(base_file_path, "r", encoding="utf-8") as f:
-                    old_content = f.read()
-            else:
-                old_content = ""
-            updated = chunk_messages(new_messages, CHUNK_SIZE)
-            with open(base_file_path, "w", encoding="utf-8") as f:
-                for line in updated:
-                    f.write(line)
-                f.write(old_content)
-        return new_last_id
-
-# ------------------------- UI часть (Tkinter Interface) -------------------------
+from business import TelegramExporter
 
 CONFIG_FILE = "config.json"
 BLOCKS_FILE = "blocks.json"
@@ -84,60 +16,63 @@ class TelegramExporterUI:
         self.root.title("Telegram Exporter")
         self.root.geometry("1920x1080")
         # Здесь окно не открывается в полном экране – полноэкранный режим отключён
-        
+
         self.api_id = None
         self.api_hash = None
         self.export_dir = None  # Директория экспорта
         self.exporter = None      # Экземпляр TelegramExporter
         self.exporter_loop = None # Отдельный event loop для TelegramExporter
-        self.dialogs = []         # Список диалогов
-        self.blocks = []          # Список блоков экспорта
+        self.dialogs = []         # Список диалогов из Telegram
+        self.blocks = []          # Список блоков экспорта (правый блок)
         # Обновляемые чаты: ключ – (block_name, chat_name, chat_id), значение – {"last_id": ..., "file_path": ...}
         self.updates = {}
-        
+
         self.cred_frame = tk.Frame(root)
         self.main_frame = tk.Frame(root)
-        
+
         self.setup_cred_frame()
         self.setup_main_frame()
-        
+
         if self.load_config():
             self.show_main_frame()
             self.load_blocks()
         else:
             self.show_cred_frame()
-    
-    # Методы для экрана ввода конфигурации
+
+    # Экран ввода конфигурации
     def setup_cred_frame(self):
         tk.Label(self.cred_frame, text="Введите api_id (число):").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.entry_api_id = tk.Entry(self.cred_frame)
         self.entry_api_id.grid(row=0, column=1, padx=5, pady=5)
-        
+
         tk.Label(self.cred_frame, text="Введите api_hash:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.entry_api_hash = tk.Entry(self.cred_frame)
         self.entry_api_hash.grid(row=1, column=1, padx=5, pady=5)
-        
+
         tk.Button(self.cred_frame, text="Сохранить", command=self.save_credentials).grid(row=2, column=0, columnspan=2, padx=5, pady=5)
-    
-    # Методы для основного экрана
+
+    # Основной экран
     def setup_main_frame(self):
         self.main_frame.columnconfigure(0, weight=1, minsize=600)
         self.main_frame.columnconfigure(1, weight=1, minsize=600)
         self.main_frame.rowconfigure(0, weight=1)
-        
-        # Левая часть – диалоги
+
+        # Левая часть – список диалогов из Telegram
         self.left_frame = tk.Frame(self.main_frame, bg="lightgrey")
         self.left_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         self.left_frame.rowconfigure(1, weight=1)
         self.left_frame.columnconfigure(0, weight=1)
-        
+
         self.top_buttons_frame = tk.Frame(self.left_frame, bg="white")
         self.top_buttons_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
         self.connect_button = tk.Button(self.top_buttons_frame, text="Подключиться к Telegram", command=self.connect)
         self.connect_button.pack(side=tk.LEFT, padx=5, pady=5)
+        # Кнопка для обновления списка чатов
+        self.refresh_button = tk.Button(self.top_buttons_frame, text="Обновить чаты", command=self.refresh_chats)
+        self.refresh_button.pack(side=tk.LEFT, padx=5, pady=5)
         self.status_label = tk.Label(self.top_buttons_frame, text="Статус: ожидание", bg="white")
         self.status_label.pack(side=tk.LEFT, padx=5, pady=5)
-        
+
         self.canvas = tk.Canvas(self.left_frame, bg="lightgrey")
         self.canvas.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
         self.scrollbar = tk.Scrollbar(self.left_frame, orient="vertical", command=self.canvas.yview)
@@ -146,10 +81,11 @@ class TelegramExporterUI:
         self.dialogs_container = tk.Frame(self.canvas, bg="lightgrey")
         self.canvas.create_window((0, 0), window=self.dialogs_container, anchor="nw")
         self.dialogs_container.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        
-        # Правая часть – блоки экспорта, общий таймер и выбор директории
+
+        # Правая часть – блоки экспорта с прокруткой
         self.right_frame = tk.Frame(self.main_frame, bg="white")
         self.right_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
+
         self.top_right_frame = tk.Frame(self.right_frame, bg="white")
         self.top_right_frame.pack(fill=tk.X, padx=5, pady=5)
         self.export_dir_button = tk.Button(self.top_right_frame, text="Выбрать директорию экспорта", command=self.choose_export_dir)
@@ -160,28 +96,42 @@ class TelegramExporterUI:
         self.add_block_button.pack(side=tk.LEFT, padx=5, pady=5)
         self.global_timer_label = tk.Label(self.top_right_frame, text="Обновление через: 60 сек", bg="white")
         self.global_timer_label.pack(side=tk.LEFT, padx=5, pady=5)
-        self.blocks_container = tk.Frame(self.right_frame, bg="white")
-        self.blocks_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-    
+        # Кнопка "Сохранить все блоки"
+        self.save_all_button = tk.Button(self.top_right_frame, text="Сохранить все блоки", command=self.save_all_blocks)
+        self.save_all_button.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.right_canvas = tk.Canvas(self.right_frame, bg="white")
+        self.right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.right_scrollbar = tk.Scrollbar(self.right_frame, orient="vertical", command=self.right_canvas.yview)
+        self.right_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.right_canvas.configure(yscrollcommand=self.right_scrollbar.set)
+        self.blocks_container = tk.Frame(self.right_canvas, bg="white")
+        self.blocks_window = self.right_canvas.create_window((0, 0), window=self.blocks_container, anchor="nw")
+        self.blocks_container.bind("<Configure>", lambda e: self.right_canvas.configure(scrollregion=self.right_canvas.bbox("all")))
+        self.right_canvas.bind("<Configure>", self.on_right_canvas_configure)
+
+    def on_right_canvas_configure(self, event):
+        self.right_canvas.itemconfig(self.blocks_window, width=event.width)
+
     def choose_export_dir(self):
         directory = filedialog.askdirectory(initialdir=self.export_dir if self.export_dir else os.getcwd())
         if directory:
             self.export_dir = directory
             self.update_export_dir_label()
             self.save_config()
-    
+
     def update_export_dir_label(self):
         self.export_dir_label.config(text=f"Экспорт в: {self.export_dir}")
-    
+
     def show_cred_frame(self):
         self.main_frame.pack_forget()
         self.cred_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-    
+
     def show_main_frame(self):
         self.cred_frame.pack_forget()
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         self.start_global_timer(60)
-    
+
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
             try:
@@ -196,7 +146,7 @@ class TelegramExporterUI:
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось загрузить конфигурацию: {e}")
         return False
-    
+
     def save_config(self):
         config = {"api_id": self.api_id, "api_hash": self.api_hash, "export_dir": self.export_dir}
         try:
@@ -204,7 +154,7 @@ class TelegramExporterUI:
                 json.dump(config, f, ensure_ascii=False, indent=4)
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить конфигурацию: {e}")
-    
+
     def save_credentials(self):
         api_id_input = self.entry_api_id.get().strip()
         api_hash_input = self.entry_api_hash.get().strip()
@@ -223,22 +173,25 @@ class TelegramExporterUI:
         messagebox.showinfo("Успех", "Конфигурация сохранена.")
         self.show_main_frame()
         self.load_blocks()
-    
+
     def connect(self):
         self.status_label.config(text="Статус: подключение...")
         self.connect_button.config(state=tk.DISABLED)
         threading.Thread(target=self.connect_thread, daemon=True).start()
-    
+
     def connect_thread(self):
         self.exporter_loop = asyncio.new_event_loop()
         def run_loop(loop):
             asyncio.set_event_loop(loop)
             loop.run_forever()
         threading.Thread(target=run_loop, args=(self.exporter_loop,), daemon=True).start()
-        
+
         self.exporter = TelegramExporter(self.api_id, self.api_hash)
-        # Используем методы get_phone и get_code для UI-запросов
-        future = asyncio.run_coroutine_threadsafe(self.exporter.connect(self.get_phone, self.get_code), self.exporter_loop)
+        # Передаём три callback'а: для телефона, кода и второго пароля
+        future = asyncio.run_coroutine_threadsafe(
+            self.exporter.connect(self.get_phone, self.get_code, self.get_password),
+            self.exporter_loop
+        )
         try:
             self.dialogs = future.result()
             self.root.after(0, self.update_dialog_list)
@@ -247,7 +200,18 @@ class TelegramExporterUI:
             self.root.after(0, lambda: messagebox.showerror("Ошибка", f"Ошибка подключения: {e}"))
             self.root.after(0, lambda: self.status_label.config(text="Статус: ошибка подключения"))
             self.root.after(0, lambda: self.connect_button.config(state=tk.NORMAL))
-    
+
+    def refresh_chats(self):
+        if self.exporter is None or self.exporter.client is None:
+            messagebox.showwarning("Внимание", "Клиент не подключён. Сначала подключитесь к Telegram.")
+            return
+        future = asyncio.run_coroutine_threadsafe(self.exporter.client.get_dialogs(), self.exporter_loop)
+        try:
+            self.dialogs = future.result()
+            self.root.after(0, self.update_dialog_list)
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Ошибка", f"Ошибка обновления чатов: {e}"))
+
     def get_phone(self):
         result = [None]
         event = threading.Event()
@@ -257,7 +221,7 @@ class TelegramExporterUI:
         self.root.after(0, ask)
         event.wait()
         return result[0]
-    
+
     def get_code(self):
         result = [None]
         event = threading.Event()
@@ -267,30 +231,90 @@ class TelegramExporterUI:
         self.root.after(0, ask)
         event.wait()
         return result[0]
-    
+
+    def get_password(self):
+        result = [None]
+        event = threading.Event()
+        def ask():
+            result[0] = simpledialog.askstring("Пароль", "Введите второй пароль (если установлен):", parent=self.root, show='*')
+            event.set()
+        self.root.after(0, ask)
+        event.wait()
+        return result[0]
+
     def update_dialog_list(self):
+        # Функция для проверки, добавлен ли данный чат в какой-либо блок
+        def is_chat_added(chat_id):
+            for block in self.blocks:
+                for entry_obj in block.chat_entries:
+                    text = entry_obj["entry"].get().strip()
+                    if text:
+                        parts = text.split(',')
+                        if len(parts) >= 2:
+                            try:
+                                entry_chat_id = int(parts[1].strip())
+                                if entry_chat_id == chat_id:
+                                    return True
+                            except ValueError:
+                                continue
+            return False
+
         for widget in self.dialogs_container.winfo_children():
             widget.destroy()
         for idx, dialog in enumerate(self.dialogs):
-            chat_title = dialog.name or "Без названия"
             row_frame = tk.Frame(self.dialogs_container, bg="lightgrey")
             row_frame.pack(fill=tk.X, padx=5, pady=2)
-            label = tk.Label(row_frame, text=f"{idx+1}. {chat_title} (ID: {dialog.id})", bg="lightgrey")
+            # Индикатор в начале: галочка если чат добавлен, иначе два пробела
+            indicator = tk.Label(row_frame, text="✓" if is_chat_added(dialog.id) else "  ", fg="green", bg="lightgrey")
+            indicator.pack(side=tk.LEFT, padx=(5,0))
+            label = tk.Label(row_frame, text=f"{idx+1}. {dialog.name or 'Без названия'} (ID: {dialog.id})", bg="lightgrey")
             label.pack(side=tk.LEFT, padx=5)
+            # Кнопка "Поиск" выводит название блока, в котором находится чат
+            search_button = tk.Button(row_frame, text="Поиск", command=lambda d=dialog: self.search_chat_for_block(d))
+            search_button.pack(side=tk.RIGHT, padx=5)
             copy_button = tk.Button(row_frame, text="Копировать чат", command=lambda d=dialog: self.copy_chat(d))
             copy_button.pack(side=tk.RIGHT, padx=5)
-    
+
+    def search_chat_for_block(self, dialog):
+        # Перебираем блоки и ищем, в каком(их) они содержат данный чат
+        found_blocks = []
+        for block in self.blocks:
+            for entry_obj in block.chat_entries:
+                text = entry_obj["entry"].get().strip()
+                if text:
+                    parts = text.split(',')
+                    if len(parts) >= 2:
+                        try:
+                            entry_chat_id = int(parts[1].strip())
+                            if entry_chat_id == dialog.id:
+                                found_blocks.append(block.name_entry.get().strip())
+                        except ValueError:
+                            continue
+        if found_blocks:
+            if len(found_blocks) == 1:
+                message = f"Чат находится в блоке: {found_blocks[0]}"
+            else:
+                message = f"Чат находится в блоках: {', '.join(found_blocks)}"
+        else:
+            message = "Чат не добавлен ни в один блок."
+        messagebox.showinfo("Поиск блока", message)
+
     def copy_chat(self, dialog):
         chat_title = dialog.name or "Без названия"
         chat_info = f"{chat_title}, {dialog.id}"
         self.root.clipboard_clear()
         self.root.clipboard_append(chat_info)
         messagebox.showinfo("Копировать чат", f"Скопировано: {chat_info}")
-    
+
+    def save_all_blocks(self):
+        # Сохраняем все блоки и выводим сообщение
+        self.save_blocks()
+        messagebox.showinfo("Сохранено", "Все блоки сохранены.")
+
     # Методы для работы с блоками экспорта
     def on_add_block(self):
         self.add_block()
-    
+
     def add_block(self, initial_data=None):
         block = ChatBlock(self.blocks_container, save_callback=self.save_blocks, export_callback=self.export_single_chat, delete_callback=self.remove_block)
         if initial_data:
@@ -304,13 +328,13 @@ class TelegramExporterUI:
         block.frame.pack(fill=tk.X, padx=5, pady=5, anchor="n")
         self.blocks.append(block)
         self.save_blocks()
-    
+
     def remove_block(self, block):
         if block in self.blocks:
             self.blocks.remove(block)
             block.frame.destroy()
             self.save_blocks()
-    
+
     def save_blocks(self):
         blocks_data = [block.get_data() for block in self.blocks]
         try:
@@ -318,7 +342,7 @@ class TelegramExporterUI:
                 json.dump(blocks_data, f, ensure_ascii=False, indent=4)
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось сохранить блоки: {e}")
-    
+
     def load_blocks(self):
         if os.path.exists(BLOCKS_FILE):
             try:
@@ -328,7 +352,7 @@ class TelegramExporterUI:
                     self.add_block(initial_data=block_data)
             except Exception as e:
                 messagebox.showerror("Ошибка", f"Не удалось загрузить блоки: {e}")
-    
+
     def export_single_chat(self, chat_value, block_name, chat_entry_obj):
         # Ожидается формат: "chat_name,chat_id"
         if not chat_value:
@@ -355,14 +379,14 @@ class TelegramExporterUI:
                 chat_entry_obj["timer_label"].destroy()
                 chat_entry_obj["timer_label"] = None
             return
-        
+
         export_dir = os.path.join(self.export_dir, block_name)
         os.makedirs(export_dir, exist_ok=True)
         base_file_path = os.path.join(export_dir, f"{chat_name}.txt")
         if self.exporter is None or self.exporter.client is None:
             messagebox.showwarning("Внимание", "Клиент не подключён. Сначала подключитесь к Telegram.")
             return
-        
+
         # Если файл уже существует – регистрируем чат для обновлений
         if os.path.exists(base_file_path):
             try:
@@ -379,7 +403,7 @@ class TelegramExporterUI:
             chat_entry_obj["active"] = True
             self.root.after(0, lambda: chat_entry_obj["button"].config(text="Закончить экспорт"))
             return
-        
+
         def run_export():
             future = asyncio.run_coroutine_threadsafe(
                 self.exporter.export_chat(chat_id, base_file_path),
@@ -394,10 +418,10 @@ class TelegramExporterUI:
                 error_msg = f"Ошибка при экспорте чата: {exc}"
                 self.root.after(0, lambda: messagebox.showerror("Ошибка экспорта", error_msg))
         threading.Thread(target=run_export, daemon=True).start()
-    
+
     def start_global_timer(self, seconds):
         self.global_countdown(seconds)
-    
+
     def global_countdown(self, seconds):
         self.global_timer_label.config(text=f"Обновление через: {seconds} сек")
         if seconds > 0:
@@ -405,7 +429,7 @@ class TelegramExporterUI:
         else:
             self.update_all_active_chats()
             self.global_countdown(60)
-    
+
     def update_all_active_chats(self):
         for key, data in list(self.updates.items()):
             block_name, chat_name, chat_id = key
@@ -433,50 +457,58 @@ class ChatBlock:
         self.name_entry = tk.Entry(self.frame)
         self.name_entry.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
         self.frame.columnconfigure(1, weight=1)
-        
+
         self.chat_container = tk.Frame(self.frame, bg="lightblue")
         self.chat_container.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
         self.chat_entries = []  # Список объектов для каждого чата
         self.add_chat()
-        
+
         self.control_frame = tk.Frame(self.frame, bg="lightblue")
         self.control_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+        # Левая часть управления блока
         self.add_chat_button = tk.Button(self.control_frame, text="+ чат", command=self.add_chat)
         self.add_chat_button.pack(side=tk.LEFT, padx=5)
         self.save_block_button = tk.Button(self.control_frame, text="Сохранить блок", command=self.save_block)
         self.save_block_button.pack(side=tk.LEFT, padx=5)
+        # Правая часть: кнопки, перемещённые и поменянные местами
         self.delete_block_button = tk.Button(self.control_frame, text="Удалить блок", command=self.delete_block)
-        self.delete_block_button.pack(side=tk.LEFT, padx=5)
+        self.delete_block_button.pack(side=tk.RIGHT, padx=5)
         self.remove_empty_button = tk.Button(self.control_frame, text="Убрать пустые поля", command=self.remove_empty_fields)
-        self.remove_empty_button.pack(side=tk.LEFT, padx=5)
-    
+        self.remove_empty_button.pack(side=tk.RIGHT, padx=5)
+
     def add_chat(self, initial_value=""):
         chat_frame = tk.Frame(self.chat_container, bg="lightblue")
         chat_frame.pack(fill=tk.X, pady=2)
         entry = tk.Entry(chat_frame, width=30)
         entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
         entry.insert(0, initial_value)
-        entry_obj = {"frame": chat_frame, "entry": entry, "button": None, "timer_label": None, "active": False}
+        entry_obj = {
+            "frame": chat_frame,
+            "entry": entry,
+            "button": None,
+            "timer_label": None,
+            "active": False
+        }
         export_button = tk.Button(chat_frame, text="Экспорт", command=lambda: self.export_chat(entry, entry_obj))
         export_button.pack(side=tk.LEFT)
         entry_obj["button"] = export_button
         self.chat_entries.append(entry_obj)
         self.save_callback()
-    
+
     def get_data(self):
         block_name = self.name_entry.get().strip()
         chats = [entry_obj["entry"].get() for entry_obj in self.chat_entries]
         return {"name": block_name, "chats": chats}
-    
+
     def save_block(self):
         self.save_callback()
         messagebox.showinfo("Сохранено", f"Блок '{self.name_entry.get()}' сохранён с {len(self.chat_entries)} полями.")
-    
+
     def delete_block(self):
         if self.delete_callback:
             self.delete_callback(self)
         self.frame.destroy()
-    
+
     def remove_empty_fields(self):
         new_entries = []
         for entry_obj in self.chat_entries:
@@ -486,7 +518,7 @@ class ChatBlock:
                 new_entries.append(entry_obj)
         self.chat_entries = new_entries
         self.save_callback()
-    
+
     def export_chat(self, entry, entry_obj):
         chat_value = entry.get().strip()
         self.export_callback(chat_value, self.name_entry.get().strip(), entry_obj)
