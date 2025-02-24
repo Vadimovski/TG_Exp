@@ -27,6 +27,9 @@ class TelegramExporterUI:
         # Обновляемые чаты: ключ – (block_name, chat_name, chat_id), значение – {"last_id": ..., "file_path": ...}
         self.updates = {}
 
+        # Переменная для выбора формата выходного файла: "txt" или "md"
+        self.output_format = tk.StringVar(value="txt")
+
         self.cred_frame = tk.Frame(root)
         self.main_frame = tk.Frame(root)
 
@@ -86,19 +89,26 @@ class TelegramExporterUI:
         self.right_frame = tk.Frame(self.main_frame, bg="white")
         self.right_frame.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
+        # Верхняя панель правой части с 4 рядами
         self.top_right_frame = tk.Frame(self.right_frame, bg="white")
         self.top_right_frame.pack(fill=tk.X, padx=5, pady=5)
-        self.export_dir_button = tk.Button(self.top_right_frame, text="Выбрать директорию экспорта", command=self.choose_export_dir)
-        self.export_dir_button.pack(side=tk.LEFT, padx=5, pady=5)
-        self.export_dir_label = tk.Label(self.top_right_frame, text="Экспорт в: (не выбран)", bg="white")
-        self.export_dir_label.pack(side=tk.LEFT, padx=5, pady=5)
-        self.add_block_button = tk.Button(self.top_right_frame, text="Добавить блок", command=self.on_add_block)
-        self.add_block_button.pack(side=tk.LEFT, padx=5, pady=5)
+        # Ряд 1: Таймер обновления
         self.global_timer_label = tk.Label(self.top_right_frame, text="Обновление через: 60 сек", bg="white")
-        self.global_timer_label.pack(side=tk.LEFT, padx=5, pady=5)
-        # Кнопка "Сохранить все блоки"
-        self.save_all_button = tk.Button(self.top_right_frame, text="Сохранить все блоки", command=self.save_all_blocks)
-        self.save_all_button.pack(side=tk.LEFT, padx=5, pady=5)
+        self.global_timer_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=5, pady=5)
+        # Ряд 2: Слева – кнопка "Добавить блок", справа – "Экспортировать как:" с выпадающим меню
+        self.add_block_button = tk.Button(self.top_right_frame, text="Добавить блок", command=self.on_add_block)
+        self.add_block_button.grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        frame_format = tk.Frame(self.top_right_frame, bg="white")
+        frame_format.grid(row=1, column=2, padx=5, pady=5, sticky="e")
+        tk.Label(frame_format, text="Экспортировать как:", bg="white").pack(side=tk.LEFT)
+        self.format_menu = tk.OptionMenu(frame_format, self.output_format, "txt", "md")
+        self.format_menu.pack(side=tk.LEFT, padx=5)
+        # Ряд 3: Справа – кнопка "Директория экспорта"
+        self.export_dir_button = tk.Button(self.top_right_frame, text="Директория экспорта", command=self.choose_export_dir)
+        self.export_dir_button.grid(row=1, column=1, padx=5, pady=5, sticky="e")
+        # Ряд 4: Справа – надпись с выбранной директорией
+        self.export_dir_label = tk.Label(self.top_right_frame, text="Экспорт в: (не выбран)", bg="white")
+        self.export_dir_label.grid(row=3, column=1, padx=5, pady=5, sticky="e")
 
         self.right_canvas = tk.Canvas(self.right_frame, bg="white")
         self.right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -368,6 +378,7 @@ class TelegramExporterUI:
         except ValueError:
             messagebox.showwarning("Внимание", "chat_id должно быть числом.")
             return
+        
         key = (block_name, chat_name, chat_id)
         # Если чат уже активен – остановить обновления
         if chat_entry_obj["active"]:
@@ -382,7 +393,10 @@ class TelegramExporterUI:
 
         export_dir = os.path.join(self.export_dir, block_name)
         os.makedirs(export_dir, exist_ok=True)
-        base_file_path = os.path.join(export_dir, f"{chat_name}.txt")
+        # Определяем расширение файла в зависимости от выбранного формата
+        ext = "md" if self.output_format.get() == "md" else "txt"
+        base_file_path = os.path.join(export_dir, f"{chat_name}.{ext}")
+
         if self.exporter is None or self.exporter.client is None:
             messagebox.showwarning("Внимание", "Клиент не подключён. Сначала подключитесь к Telegram.")
             return
@@ -405,10 +419,17 @@ class TelegramExporterUI:
             return
 
         def run_export():
-            future = asyncio.run_coroutine_threadsafe(
-                self.exporter.export_chat(chat_id, base_file_path),
-                self.exporter_loop
-            )
+            # Выбираем функцию экспорта в зависимости от формата
+            if self.output_format.get() == "md":
+                future = asyncio.run_coroutine_threadsafe(
+                    self.exporter.export_chat_md(chat_id, base_file_path),
+                    self.exporter_loop
+                )
+            else:
+                future = asyncio.run_coroutine_threadsafe(
+                    self.exporter.export_chat(chat_id, base_file_path),
+                    self.exporter_loop
+                )
             try:
                 last_id = future.result()
                 self.updates[key] = {"last_id": last_id, "file_path": base_file_path}

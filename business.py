@@ -51,6 +51,34 @@ class TelegramExporter:
                 f.write(line)
         return max_id
 
+    async def export_chat_md(self, chat_id, base_file_path):
+        """
+        Экспортирует чат в формате Markdown.
+        Для каждого сообщения создаётся блок с заголовком, датой, отправителем и текстом,
+        разделённый горизонтальной линией.
+        """
+        messages = []
+        max_id = 0
+        async for message in self.client.iter_messages(chat_id):
+            if message.id > max_id:
+                max_id = message.id
+            date_str = message.date.strftime('%Y-%m-%d %H:%M:%S') if message.date else "UnknownDate"
+            sender = message.sender_id if message.sender_id else "UnknownSender"
+            text = message.message if message.message else ""
+            # Форматирование сообщения в markdown
+            msg_md = (
+                f"### Message {message.id}\n"
+                f"**Date:** {date_str}  \n"
+                f"**Sender:** {sender}\n\n"
+                f"{text}\n\n"
+                f"---\n"
+            )
+            messages.append(msg_md)
+        content = "\n".join(messages)
+        with open(base_file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return max_id
+
     async def update_chat(self, chat_id, base_file_path, last_message_id):
         new_messages = []
         new_last_id = last_message_id
