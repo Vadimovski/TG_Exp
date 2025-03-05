@@ -28,7 +28,7 @@ class TelegramExporterUI:
         self.updates = {}
 
         # Переменная для выбора формата выходного файла: "txt" или "md"
-        self.output_format = tk.StringVar(value="txt")
+        self.output_format = tk.StringVar(value="md")
 
         self.cred_frame = tk.Frame(root)
         self.main_frame = tk.Frame(root)
